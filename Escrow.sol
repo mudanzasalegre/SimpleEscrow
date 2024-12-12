@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PropietarioUnico
 pragma solidity ^0.8.28;
 
+// Interfaz simplificada de ERC20 para transferencias y transferFrom
 interface IERC20 {
     function transferFrom(
         address sender,
@@ -14,65 +15,83 @@ interface IERC20 {
 }
 
 contract Escrow {
+    // Estructuras de entrada para el constructor
     struct ParticipantInput {
         address addr;
-        uint256 share;
+        uint256 share; // Ej: 5000 = 50%, 10000 = 100%
     }
 
     struct RecipientInput {
         address addr;
-        uint256 share;
+        uint256 share; // Deben sumar 10000 entre todos los receptores
     }
 
     struct AssetInput {
-        address token; // 0x0 si es Ether
-        uint256 requiredAmount;
+        address token; // 0x0 si es Ether nativo
+        uint256 requiredAmount; // Cantidad requerida para considerar el asset fondeado
     }
 
+    // Representa un activo en el escrow (Ether o un token específico)
     struct Asset {
-        address token;
+        address token; 
         uint256 requiredAmount;
-        uint256 depositedAmount;
+        uint256 depositedAmount; // Cantidad actualmente depositada
     }
 
+    // Posibles estados del escrow
     enum State {
-        INIT,
-        AWAITING_CONFIRMATION,
-        DISPUTE,
-        RESOLVED,
-        REFUNDED
+        INIT,                  // Inicial, esperando fondos
+        AWAITING_CONFIRMATION, // Fondos completos, esperando confirmaciones
+        DISPUTE,               // En disputa, el mediador debe resolver
+        RESOLVED,              // Resuelto a favor de los receptores
+        REFUNDED               // Reembolsado a los participantes
     }
 
+    // Dirección del mediador que resolverá disputas
     address public mediator;
 
+    // Listado de participantes y mapping de sus shares
     address[] public participantsList;
     mapping(address => uint256) public participantShares;
     uint256 public totalParticipantShare;
 
+    // Listado de receptores y sus shares, deben sumar 10000
     address[] public recipientsList;
-    mapping(address => uint256) public recipientShares; // deben sumar 10000
+    mapping(address => uint256) public recipientShares;
 
+    // Lista de assets requeridos y un mapping para buscar su índice por token
     Asset[] public assets;
     mapping(address => uint256) public assetIndexByToken;
 
+    // Estado actual del escrow
     State public state;
+
+    // Umbral de confirmaciones requerido (en base 10000)
     uint256 public confirmationsThreshold;
+
+    // Períodos de tiempo en segundos
     uint256 public fundingPeriod;
     uint256 public confirmationPeriod;
     uint256 public disputePeriod;
 
+    // Timestamps clave
     uint256 public creationTime;
     uint256 public fundedTime;
     uint256 public disputeStartTime;
 
+    // Confirmaciones de participantes
     mapping(address => bool) public hasConfirmed;
-    uint256 public confirmationsWeight;
+    uint256 public confirmationsWeight; // Suma de shares confirmados
 
+    // Depósitos (participante -> token -> amount)
     mapping(address => mapping(address => uint256)) public deposits;
+
+    // Saldo pendiente de retirar (pull payments)
     mapping(address => mapping(address => uint256)) public balancesToWithdraw;
 
-    bool public disputeRaised;
+    bool public disputeRaised; // Indica si se inició una disputa
 
+    // Eventos para monitorear el flujo del contrato
     event StateChanged(State oldState, State newState);
     event Deposited(address indexed participant, address token, uint256 amount);
     event Confirmed(address indexed participant);
@@ -92,6 +111,7 @@ contract Escrow {
         _;
     }
 
+    // Constructor: configura el escrow con participantes, receptores, assets y tiempos
     constructor(
         address _mediator,
         ParticipantInput[] memory _participants,
@@ -109,6 +129,7 @@ contract Escrow {
         disputePeriod = _disputePeriod;
         creationTime = block.timestamp;
 
+        // Registrar participantes y sumar sus shares
         uint256 sumShares = 0;
         for (uint256 i = 0; i < _participants.length; i++) {
             participantsList.push(_participants[i].addr);
@@ -117,6 +138,7 @@ contract Escrow {
         }
         totalParticipantShare = sumShares;
 
+        // Registrar receptores y verificar que sumen 10000
         uint256 sumRecipients = 0;
         for (uint256 i = 0; i < _recipients.length; i++) {
             recipientsList.push(_recipients[i].addr);
@@ -125,6 +147,7 @@ contract Escrow {
         }
         require(sumRecipients == 10000, "Recipients shares must sum to 10000");
 
+        // Registrar assets requeridos
         for (uint256 i = 0; i < _assets.length; i++) {
             assets.push(
                 Asset({
@@ -139,7 +162,7 @@ contract Escrow {
         state = State.INIT;
     }
 
-    // Funciones añadidas para contar participantes, receptores y activos
+    // Funciones para obtener conteos, facilitan las llamadas desde fuera
     function participantsCount() external view returns (uint256) {
         return participantsList.length;
     }
@@ -155,6 +178,8 @@ contract Escrow {
     // -------------------
     // Depósito de Fondos
     // -------------------
+
+    // Depósito de Ether nativo
     function depositETH() external payable inState(State.INIT) {
         require(msg.value > 0, "No ETH sent");
         _checkFundingDeadline();
@@ -163,6 +188,7 @@ contract Escrow {
         require(idx != 0, "No ETH asset required");
         uint256 assetIdx = idx - 1;
 
+        // Registrar depósito
         assets[assetIdx].depositedAmount += msg.value;
         deposits[msg.sender][address(0)] += msg.value;
 
@@ -171,6 +197,7 @@ contract Escrow {
         _checkAllDepositsCompleted();
     }
 
+    // Depósito de tokens ERC20
     function depositToken(address token, uint256 amount)
         external
         inState(State.INIT)
@@ -183,6 +210,7 @@ contract Escrow {
         require(idx != 0, "Token asset not required");
         uint256 assetIdx = idx - 1;
 
+        // Transferencia del token al contrato
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
         assets[assetIdx].depositedAmount += amount;
@@ -193,6 +221,7 @@ contract Escrow {
         _checkAllDepositsCompleted();
     }
 
+    // Verifica si todos los assets requeridos están completos
     function _checkAllDepositsCompleted() internal {
         for (uint256 i = 0; i < assets.length; i++) {
             if (assets[i].depositedAmount < assets[i].requiredAmount) {
@@ -200,6 +229,7 @@ contract Escrow {
             }
         }
 
+        // Si llegamos aquí, todos los assets están fondeados
         State oldState = state;
         state = State.AWAITING_CONFIRMATION;
         fundedTime = block.timestamp;
@@ -218,13 +248,14 @@ contract Escrow {
     // -------------------
     function confirm() external inState(State.AWAITING_CONFIRMATION) {
         uint256 pShare = participantShares[msg.sender];
-        require(pShare > 0, "Not participant");
+        require(pShare > 0, "Not participant"); // Debe ser un participante
         require(!hasConfirmed[msg.sender], "Already confirmed");
 
         hasConfirmed[msg.sender] = true;
         confirmationsWeight += pShare;
         emit Confirmed(msg.sender);
 
+        // Verificar si se alcanzó el umbral de confirmación
         uint256 confirmationsPercent = (confirmationsWeight * 10000) /
             totalParticipantShare;
         if (confirmationsPercent >= confirmationsThreshold) {
@@ -232,12 +263,14 @@ contract Escrow {
         }
     }
 
+    // Asigna fondos a receptores en estado RESOLVED
     function _allocateFundsToRecipients() internal {
         require(state == State.AWAITING_CONFIRMATION, "Wrong state");
         State oldState = state;
         state = State.RESOLVED;
         emit StateChanged(oldState, state);
 
+        // Distribuir fondos según las shares de los receptores
         for (uint256 i = 0; i < assets.length; i++) {
             Asset memory asset = assets[i];
             uint256 totalAmount = asset.depositedAmount;
@@ -269,6 +302,7 @@ contract Escrow {
         emit DisputeRaised(msg.sender);
     }
 
+    // El mediador puede resolver a favor de los receptores
     function resolveDisputeToRecipients()
         external
         onlyMediator
@@ -279,6 +313,7 @@ contract Escrow {
         emit ResolvedByMediator(msg.sender);
     }
 
+    // El mediador puede resolver reembolsando a los participantes
     function resolveDisputeRefundAll()
         external
         onlyMediator
@@ -322,6 +357,7 @@ contract Escrow {
         _allocateRefundToParticipants();
     }
 
+    // Reembolsar a participantes sus aportes iniciales
     function _allocateRefundToParticipants() internal {
         require(
             state != State.RESOLVED && state != State.REFUNDED,
@@ -331,6 +367,7 @@ contract Escrow {
         state = State.REFUNDED;
         emit StateChanged(oldState, state);
 
+        // Devolver a cada participante lo que aportó
         for (uint256 p = 0; p < participantsList.length; p++) {
             address participantAddr = participantsList[p];
             for (uint256 a = 0; a < assets.length; a++) {
@@ -348,12 +385,14 @@ contract Escrow {
     // -------------------
     // Withdraw (Pull Payment)
     // -------------------
+    // Cada usuario retira sus fondos asignados tras RESOLVED o REFUNDED
     function withdraw(address token) external {
         uint256 amount = balancesToWithdraw[msg.sender][token];
         require(amount > 0, "Nothing to withdraw");
 
         balancesToWithdraw[msg.sender][token] = 0;
 
+        // Enviar Ether o tokens
         if (token == address(0)) {
             (bool success, ) = msg.sender.call{value: amount}("");
             require(success, "ETH withdraw failed");
@@ -364,6 +403,7 @@ contract Escrow {
         }
     }
 
+    // Para recibir Ether
     receive() external payable {}
 }
 
@@ -376,6 +416,7 @@ contract EscrowFactory {
 
     address[] public allEscrows;
 
+    // Estructura para devolver todos los detalles del Escrow sin problemas de stack
     struct EscrowDetails {
         Escrow.State state_;
         address mediator_;
@@ -396,6 +437,7 @@ contract EscrowFactory {
         bool disputeRaised_;
     }
 
+    // Crear un nuevo escrow a través del factory
     function createEscrow(
         address mediator,
         Escrow.ParticipantInput[] calldata participants,
@@ -423,10 +465,12 @@ contract EscrowFactory {
         return address(newEscrow);
     }
 
+    // Devuelve todos los escrows creados
     function getAllEscrows() external view returns (address[] memory) {
         return allEscrows;
     }
 
+    // Obtiene la lista de escrows en estado DISPUTE
     function getEscrowsInDispute() external view returns (address[] memory) {
         uint256 count = 0;
         for (uint256 i = 0; i < allEscrows.length; i++) {
@@ -449,7 +493,7 @@ contract EscrowFactory {
         return disputes;
     }
 
-    // Retornamos todo dentro de un struct para evitar stack too deep
+    // Retorna detalles completos de un escrow específico
     function getEscrowDetails(address escrowAddress)
         external
         view
