@@ -1,4 +1,3 @@
-
 # SimpleEscrow, sistema de escrow en Solidity
 
 Este sistema implementa un mecanismo de custodia ("escrow") sobre fondos en Ether y/o tokens ERC20. Permite depositar fondos, requerir confirmaciones de las partes involucradas, resolver disputas a través de un mediador, y finalmente retirar los fondos asignados usando un modelo "pull payment".
@@ -148,3 +147,53 @@ Así cada uno retira su parte cuando lo desee, evitando transacciones masivas.
 - Si el mediador no actúa a tiempo, `forceRefund()` puede usarse para reembolsar a los participantes.
 
   De esta forma, el sistema provee un escrow flexible, seguro y escalable.
+
+
+## Tests Exhaustivos con Hardhat
+
+El repositorio ha sido actualizado con un archivo que incluye tests exhaustivos usando Hardhat. Estos tests verifican casos generales, errores, eventos y situaciones extremas, garantizando el correcto funcionamiento del sistema.
+
+Ejecuta los tests con:
+
+    npx hardhat test
+
+Salida esperada:
+
+    Escrow and EscrowFactory
+      EscrowFactory
+        ✔ should create a new escrow
+        ✔ should list all escrows
+      Escrow
+        General Cases
+          ✔ should allow ETH deposit and transition state
+          ✔ should not allow deposits after funding period
+          ✔ should not allow deposits after funding period ends
+          ✔ should allow confirmations and resolve escrow
+          ✔ should not resolve escrow if confirmations are insufficient
+          ✔ should raise and resolve disputes
+          ✔ should not allow disputes before confirmation period ends
+          ✔ should not allow duplicate confirmations
+          ✔ should not allow withdrawal if no funds are available
+          ✔ should distribute funds correctly among recipients
+          ✔ should allow withdrawals
+          ✔ should not resolve escrow until confirmation threshold is met
+          ✔ should allow multiple small deposits to fulfill the funding requirement
+          ✔ should allow the mediator to change the mediator
+        Event Cases
+          ✔ should emit Deposited event on ETH deposit
+          ✔ should emit Confirmed event on participant confirmation
+          ✔ should emit DisputeRaised event when a dispute is raised
+          ✔ should emit FundsAllocated event when funds are distributed to recipients
+          ✔ should emit Withdrawn event on successful withdrawal
+          ✔ should emit StateChanged event on state transitions
+        Error Cases
+          ✔ should revert if a non-mediator tries to resolve a dispute
+          ✔ should revert if a non-mediator tries to change the mediator
+          ✔ should revert if a non-participant tries to confirm
+          ✔ should revert if trying to withdraw funds before state is RESOLVED
+        Extreme Cases
+          ✔ should handle an escrow with 1 participant and 1 recipient
+          ✔ should handle an escrow with many participants and recipients
+          ✔ should handle multiple assets (ETH and ERC20 tokens)
+          ✔ should simulate the full lifecycle of the escrow contract
+

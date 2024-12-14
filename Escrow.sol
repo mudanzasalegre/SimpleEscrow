@@ -9,9 +9,10 @@ interface IERC20 {
         uint256 amount
     ) external returns (bool);
 
-    function transfer(address recipient, uint256 amount)
-        external
-        returns (bool);
+    function transfer(
+        address recipient,
+        uint256 amount
+    ) external returns (bool);
 }
 
 contract Escrow {
@@ -33,18 +34,18 @@ contract Escrow {
 
     // Representa un activo en el escrow (Ether o un token específico)
     struct Asset {
-        address token; 
+        address token;
         uint256 requiredAmount;
         uint256 depositedAmount; // Cantidad actualmente depositada
     }
 
     // Posibles estados del escrow
     enum State {
-        INIT,                  // Inicial, esperando fondos
+        INIT, // Inicial, esperando fondos
         AWAITING_CONFIRMATION, // Fondos completos, esperando confirmaciones
-        DISPUTE,               // En disputa, el mediador debe resolver
-        RESOLVED,              // Resuelto a favor de los receptores
-        REFUNDED               // Reembolsado a los participantes
+        DISPUTE, // En disputa, el mediador debe resolver
+        RESOLVED, // Resuelto a favor de los receptores
+        REFUNDED // Reembolsado a los participantes
     }
 
     // Dirección del mediador que resolverá disputas
@@ -100,13 +101,21 @@ contract Escrow {
     event FundsAllocated(address indexed user, uint256 amount, address token);
     event Refunded(address indexed participant, uint256 amount, address token);
     event Withdrawn(address indexed user, uint256 amount, address token);
+    event DebugState(State state); // Evento para depuración
+    event DebugIndex(uint256 index);
 
     modifier onlyMediator() {
         require(msg.sender == mediator, "Not mediator");
         _;
     }
 
+    modifier onlyParticipant() {
+        require(participantShares[msg.sender] > 0, "Not a participant");
+        _;
+    }
+
     modifier inState(State _s) {
+        emit DebugState(state); // Evento para confirmar el estado actual
         require(state == _s, "Invalid state");
         _;
     }
@@ -185,6 +194,7 @@ contract Escrow {
         _checkFundingDeadline();
 
         uint256 idx = assetIndexByToken[address(0)];
+        emit DebugIndex(idx); // Agregar este evento para verificar el índice
         require(idx != 0, "No ETH asset required");
         uint256 assetIdx = idx - 1;
 
@@ -198,10 +208,10 @@ contract Escrow {
     }
 
     // Depósito de tokens ERC20
-    function depositToken(address token, uint256 amount)
-        external
-        inState(State.INIT)
-    {
+    function depositToken(
+        address token,
+        uint256 amount
+    ) external inState(State.INIT) {
         require(token != address(0), "Invalid token");
         require(amount > 0, "No token amount");
         _checkFundingDeadline();
@@ -225,15 +235,17 @@ contract Escrow {
     function _checkAllDepositsCompleted() internal {
         for (uint256 i = 0; i < assets.length; i++) {
             if (assets[i].depositedAmount < assets[i].requiredAmount) {
-                return;
+                return; // Si algún asset no está fondeado, salir
             }
         }
 
-        // Si llegamos aquí, todos los assets están fondeados
-        State oldState = state;
-        state = State.AWAITING_CONFIRMATION;
-        fundedTime = block.timestamp;
-        emit StateChanged(oldState, state);
+        // Si todos los assets están fondeados, cambiar el estado
+        if (state == State.INIT) {
+            State oldState = state;
+            state = State.AWAITING_CONFIRMATION;
+            fundedTime = block.timestamp;
+            emit StateChanged(oldState, state);
+        }
     }
 
     function _checkFundingDeadline() internal view {
@@ -246,13 +258,18 @@ contract Escrow {
     // -------------------
     // Confirmaciones
     // -------------------
-    function confirm() external inState(State.AWAITING_CONFIRMATION) {
-        uint256 pShare = participantShares[msg.sender];
-        require(pShare > 0, "Not participant"); // Debe ser un participante
+    function confirm()
+        external
+        inState(State.AWAITING_CONFIRMATION)
+        onlyParticipant
+    {
+        // Verificar si el participante ya confirmó
         require(!hasConfirmed[msg.sender], "Already confirmed");
 
+        // Registrar la confirmación del participante
         hasConfirmed[msg.sender] = true;
-        confirmationsWeight += pShare;
+        confirmationsWeight += participantShares[msg.sender];
+
         emit Confirmed(msg.sender);
 
         // Verificar si se alcanzó el umbral de confirmación
@@ -387,6 +404,12 @@ contract Escrow {
     // -------------------
     // Cada usuario retira sus fondos asignados tras RESOLVED o REFUNDED
     function withdraw(address token) external {
+        // Verificar que el estado sea válido para permitir retiros
+        require(
+            state == State.RESOLVED || state == State.REFUNDED,
+            "Invalid state"
+        );
+
         uint256 amount = balancesToWithdraw[msg.sender][token];
         require(amount > 0, "Nothing to withdraw");
 
@@ -401,6 +424,15 @@ contract Escrow {
             IERC20(token).transfer(msg.sender, amount);
             emit Withdrawn(msg.sender, amount, token);
         }
+    }
+
+    // Cambiar la dirección del mediador
+    function changeMediator(address newMediator) external onlyMediator {
+        require(
+            newMediator != address(0),
+            "New mediator cannot be zero address"
+        );
+        mediator = newMediator;
     }
 
     // Para recibir Ether
@@ -494,11 +526,9 @@ contract EscrowFactory {
     }
 
     // Retorna detalles completos de un escrow específico
-    function getEscrowDetails(address escrowAddress)
-        external
-        view
-        returns (EscrowDetails memory details)
-    {
+    function getEscrowDetails(
+        address escrowAddress
+    ) external view returns (EscrowDetails memory details) {
         Escrow e = Escrow(payable(escrowAddress));
 
         details.state_ = e.state();
